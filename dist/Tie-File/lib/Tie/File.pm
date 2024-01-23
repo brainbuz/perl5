@@ -66,7 +66,7 @@ sub TIEARRAY {
   $opts{deferred_max} = -1;     # empty
 
   # What's a good way to arrange that this class can be overridden?
-  $opts{cache} = Tie::File::Cache->new($opts{memory});
+  $opts{cache} = Tie::File::Cache->new($opts{memory}, $encoding);
 
   # autodeferment is enabled by default
   $opts{autodefer} = 1 unless defined $opts{autodefer};
@@ -108,19 +108,14 @@ sub TIEARRAY {
   } elsif (ref $file) {
     croak "usage: tie \@array, $pack, filename, [option => value]...";
   } else {
-    # $fh = \do { local *FH };  # XXX this is buggy
-    if ($] < 5.006) {
-	# perl 5.005 and earlier don't autovivify filehandles
-	require Symbol;
-	$fh = Symbol::gensym();
-    }
     sysopen $fh, $file, $opts{mode}, 0666 or return;
     if ( $opts{binmode} ) {
-      $encoding = $opts{binmode};
-      binmode( $fh, ":encoding(${encoding})" ); # encoding(UTF-8)
+      $encoding = $opts{binmode}; 
+      binmode( $fh, ":encoding(${encoding})" ); 
     } else {
       binmode $fh 
     }
+$DB::single = 1;
     ++$opts{ourfh};
   }
   { my $ofh = select $fh; $| = 1; select $ofh } # autoflush on write
@@ -137,12 +132,7 @@ sub TIEARRAY {
 
 sub _length {
   my $rec = shift @_;
-  if ($encoding) { 
-    warn "$encoding ======" ;
-    warn length( $rec);
-    my $newrec = decode( $encoding, $rec );
-    warn length ($newrec);
-    }
+  if ($encoding) { return length(encode( $encoding, $rec )) }
   return length($rec);
 }
 
@@ -1480,25 +1470,17 @@ sub BYTES() { 3 }
 use strict 'vars';
 
 sub new {
-  my ($pack, $max, $encoding) = @_;
+  my ($pack, $max, $encodeas) = @_;
   local *_;
   croak "missing argument to ->new" unless defined $max;
+  $encoding = $encodeas;
   my $self = [];
   bless $self => $pack;
   @$self = (Tie::File::Heap->new($self), {}, $max, 0);
   $self;
 }
 
-sub _length {
-  my $rec = shift @_;
-  if ($encoding) { 
-    warn "$encoding ======" ;
-    warn length( $rec);
-    my $newrec = decode( $encoding, $rec );
-    warn length ($newrec);
-    }
-  return length($rec);
-}
+sub _length { Tie::File::_length(@_) }
 
 sub adj_limit {
   my ($self, $n) = @_;
