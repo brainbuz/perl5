@@ -8,6 +8,9 @@ use POSIX 'SEEK_SET';
 use Fcntl 'O_CREAT', 'O_RDWR', 'LOCK_EX', 'LOCK_SH', 'O_WRONLY', 'O_RDONLY';
 sub O_ACCMODE () { O_RDONLY | O_RDWR | O_WRONLY }
 
+use feature 'unicode_strings';
+use Encode qw(decode encode);
+
 our $VERSION = "1.08";
 my $DEFAULT_MEMORY_SIZE = 1<<21;    # 2 megabytes
 my $DEFAULT_AUTODEFER_THRESHHOLD = 3; # 3 records
@@ -20,6 +23,8 @@ my %good_opt = map { $_ => 1, "-$_" => 1 }
 our $DIAGNOSTIC = 0;
 our @OFF; # used as a temporary alias in some subroutines.
 our @H; # used as a temporary alias in _annotate_ad_history
+
+my $encoding = '';
 
 sub TIEARRAY {
   if (@_ % 2 != 0) {
@@ -111,7 +116,8 @@ sub TIEARRAY {
     }
     sysopen $fh, $file, $opts{mode}, 0666 or return;
     if ( $opts{binmode} ) {
-      binmode( $fh, $opts{binmode} );
+      $encoding = $opts{binmode};
+      binmode( $fh, ":encoding(${encoding})" ); # encoding(UTF-8)
     } else {
       binmode $fh 
     }
@@ -127,6 +133,17 @@ sub TIEARRAY {
   $opts{fh} = $fh;
 
   bless \%opts => $pack;
+}
+
+sub _length {
+  my $rec = shift @_;
+  if ($encoding) { 
+    warn "$encoding ======" ;
+    warn length( $rec);
+    my $newrec = decode( $encoding, $rec );
+    warn length ($newrec);
+    }
+  return length($rec);
 }
 
 sub FETCH {
@@ -224,10 +241,10 @@ sub STORE {
     $oldrec = $self->{recsep};
   }
 #  return if $oldrec eq $rec;    # don't bother
-  my $len_diff = length($rec) - length($oldrec);
+  my $len_diff = _length($rec) - _length($oldrec);
 
   # length($oldrec) here is not consistent with text mode  TODO XXX BUG
-  $self->_mtwrite($rec, $self->{offsets}[$n], length($oldrec));
+  $self->_mtwrite($rec, $self->{offsets}[$n], _length($oldrec));
   $self->_oadjust([$n, 1, $rec]);
   $self->{cache}->update($n, $rec);
 }
@@ -242,8 +259,8 @@ sub _store_deferred {
   }
   $self->{deferred}{$n} = $rec;
 
-  my $len_diff = length($rec);
-  $len_diff -= length($old_deferred) if defined $old_deferred;
+  my $len_diff = _length($rec);
+  $len_diff -= _length($old_deferred) if defined $old_deferred;
   $self->{deferred_s} += $len_diff;
   $self->{cache}->adj_limit(-$len_diff);
   if ($self->{deferred_s} > $self->{dw_size}) {
@@ -265,8 +282,8 @@ sub _delete_deferred {
     undef $self->{deferred_max};
   }
 
-  $self->{deferred_s} -= length $rec;
-  $self->{cache}->adj_limit(length $rec);
+  $self->{deferred_s} -= _length $rec;
+  $self->{cache}->adj_limit(_length $rec);
 }
 
 sub FETCHSIZE {
@@ -473,7 +490,7 @@ sub _splice {
 
   $self->_fixrecs(@data);
   my $data = join '', @data;
-  my $datalen = length $data;
+  my $datalen = _length $data;
   my $oldlen = 0;
 
   # compute length of data being removed
@@ -550,7 +567,7 @@ sub _twrite {
     die "\$pos was undefined in _twrite";
   }
 
-  my $len_diff = length($data) - $len;
+  my $len_diff = _length($data) - $len;
 
   if ($len_diff == 0) {          # Woo-hoo!
     my $fh = $self->{fh};
@@ -578,7 +595,7 @@ sub _twrite {
     $self->_seekb($writepos);
     $self->_write_record($data);
     $readpos += $br;
-    $writepos += length $data;
+    $writepos += _length $data;
     $data = $next_block;
   } while $more_data;
   $self->_seekb($writepos);
@@ -599,7 +616,7 @@ sub _twrite {
 sub _iwrite {
   my $self = shift;
   my ($D, $s, $e) = @_;
-  my $d = length $D;
+  my $d = _length $D;
   my $c = $e-$s-$d;
   local *FH = $self->{fh};
   confess "Not enough space to insert $d bytes between $s and $e"
@@ -632,10 +649,10 @@ sub _mtwrite {
     my ($data, $pos, $len) = splice @_, 0, 3;
     my $end = $pos + $len;  # The OLD end of the segment to be replaced
     $data = $unwritten . $data;
-    $delta -= length($unwritten);
+    $delta -= _length($unwritten);
     $unwritten  = "";
     $pos += $delta;             # This is where the data goes now
-    my $dlen = length $data;
+    my $dlen = _length $data;
     $self->_seekb($pos);
     if ($len >= $dlen) {        # the data will fit
       $self->_write_record($data);
@@ -650,7 +667,7 @@ sub _mtwrite {
     # At this point we've written some but maybe not all of the data.
     # There might be a gap to close up, or $data might still contain a
     # bunch of unwritten data that didn't fit.
-    my $ndlen = length $data;
+    my $ndlen = _length $data;
     if ($delta == 0) {
       $self->_write_record($data);
     } elsif ($delta < 0) {
@@ -723,7 +740,7 @@ sub _downcopy {
       : $len > $blocksize? $blocksize : $len;
     $self->_seekb($pos);
     read $fh, my($old), $readsize;
-    my $last_read_was_short = length($old) < $readsize;
+    my $last_read_was_short = _length($old) < $readsize;
     $data .= $old;
     my $writable;
     if ($last_read_was_short) {
@@ -773,7 +790,7 @@ sub _oadjust {
     # replace with the offsets for the inserted records
     my @newoff = ($self->{offsets}[$pos] + $delta);
     for my $i (0 .. $#data) {
-      my $newlen = length $data[$i];
+      my $newlen = _length $data[$i];
       push @newoff, $newoff[$i] + $newlen;
       $delta += $newlen;
     }
@@ -1299,8 +1316,8 @@ sub _check_integrity {
   } elsif ($rs eq "") {
     _ci_warn("recsep is empty!");
     $good = 0;
-  } elsif ($rsl != length $rs) {
-    my $ln = length $rs;
+  } elsif ($rsl != _length $rs) {
+    my $ln = _length $rs;
     _ci_warn("recsep <$rs> has length $ln, should be $rsl");
     $good = 0;
   }
@@ -1353,7 +1370,7 @@ sub _check_integrity {
     my $deferring = $self->_is_deferring;
     for my $n ($self->{cache}->ckeys) {
       my $r = $self->{cache}->_produce($n);
-      $cached += length($r);
+      $cached += _length($r);
       next if $n+1 <= $.;         # checked this already
       _ci_warn("spurious caching of record $n");
       $good = 0;
@@ -1378,7 +1395,7 @@ sub _check_integrity {
   # Any record in the deferbuffer should *not* be present in the readcache
   my $deferred_s = 0;
   while (my ($n, $r) = each %{$self->{deferred}}) {
-    $deferred_s += length($r);
+    $deferred_s += _length($r);
     if (defined $self->{cache}->_produce($n)) {
       _ci_warn("record $n is in the deferbuffer *and* the readcache");
       $good = 0;
@@ -1451,6 +1468,7 @@ sub _check_integrity {
 package Tie::File::Cache;
 $Tie::File::Cache::VERSION = $Tie::File::VERSION;
 use Carp ':DEFAULT', 'confess';
+use Encode qw(decode encode);
 
 sub HEAP () { 0 }
 sub HASH () { 1 }
@@ -1462,13 +1480,24 @@ sub BYTES() { 3 }
 use strict 'vars';
 
 sub new {
-  my ($pack, $max) = @_;
+  my ($pack, $max, $encoding) = @_;
   local *_;
   croak "missing argument to ->new" unless defined $max;
   my $self = [];
   bless $self => $pack;
   @$self = (Tie::File::Heap->new($self), {}, $max, 0);
   $self;
+}
+
+sub _length {
+  my $rec = shift @_;
+  if ($encoding) { 
+    warn "$encoding ======" ;
+    warn length( $rec);
+    my $newrec = decode( $encoding, $rec );
+    warn length ($newrec);
+    }
+  return length($rec);
 }
 
 sub adj_limit {
@@ -1514,11 +1543,11 @@ sub insert {
   my $oldnode = $self->[HASH]{$key};
   if (defined $oldnode) {
     my $oldval = $self->[HEAP]->set_val($oldnode, $val);
-    $self->[BYTES] -= length($oldval);
+    $self->[BYTES] -= _length($oldval);
   } else {
     $self->[HEAP]->insert($key, $val);
   }
-  $self->[BYTES] += length($val);
+  $self->[BYTES] += _length($val);
   $self->flush if $self->[BYTES] > $self->[MAX];
 }
 
@@ -1526,7 +1555,7 @@ sub expire {
   my $self = shift;
   my $old_data = $self->[HEAP]->popheap;
   return unless defined $old_data;
-  $self->[BYTES] -= length $old_data;
+  $self->[BYTES] -= _length $old_data;
   $old_data;
 }
 
@@ -1544,7 +1573,7 @@ sub remove {
   for my $key (@keys) {
     next unless exists $self->[HASH]{$key};
     my $old_data = $self->[HEAP]->remove($self->[HASH]{$key});
-    $self->[BYTES] -= length $old_data;
+    $self->[BYTES] -= _length $old_data;
     push @result, $old_data;
   }
   @result;
@@ -1603,16 +1632,16 @@ sub update {
   my ($self, $key, $val) = @_;
   local *_;
   croak "missing argument to ->update" unless defined $key;
-  if (length($val) > $self->[MAX]) {
+  if (_length($val) > $self->[MAX]) {
     my ($oldval) = $self->remove($key);
-    $self->[BYTES] -= length($oldval) if defined $oldval;
+    $self->[BYTES] -= _length($oldval) if defined $oldval;
   } elsif (exists $self->[HASH]{$key}) {
     my $oldval = $self->[HEAP]->set_val($self->[HASH]{$key}, $val);
-    $self->[BYTES] += length($val);
-    $self->[BYTES] -= length($oldval) if defined $oldval;
+    $self->[BYTES] += _length($val);
+    $self->[BYTES] -= _length($oldval) if defined $oldval;
   } else {
     $self->[HEAP]->insert($key, $val);
-    $self->[BYTES] += length($val);
+    $self->[BYTES] += _length($val);
   }
   $self->flush;
 }
@@ -1655,7 +1684,7 @@ sub reduce_size_to {
     # Note that Tie::File::Cache::expire has been inlined here
     my $old_data = $self->[HEAP]->popheap;
     return unless defined $old_data;
-    $self->[BYTES] -= length $old_data;
+    $self->[BYTES] -= _length $old_data;
   }
 }
 
@@ -1703,7 +1732,7 @@ sub _check_integrity {          # For CACHE
         $good = 0;
         _ci_warn "Heap contents key $k (=> $h) are undefined";
       } else {
-        $bytes += length($j->[2]);
+        $bytes += _length($j->[2]);
         if ($k ne $j->[1]) {
           $good = 0;
           _ci_warn "Heap contents key $k (=> $h) is $j->[1], should be $k";
