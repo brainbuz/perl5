@@ -1,7 +1,5 @@
 package Tie::File;
 
-require 5.005;
-
 use strict;
 use warnings;
 
@@ -10,15 +8,14 @@ use POSIX 'SEEK_SET';
 use Fcntl 'O_CREAT', 'O_RDWR', 'LOCK_EX', 'LOCK_SH', 'O_WRONLY', 'O_RDONLY';
 sub O_ACCMODE () { O_RDONLY | O_RDWR | O_WRONLY }
 
-
-our $VERSION = "1.07";
+our $VERSION = "1.08";
 my $DEFAULT_MEMORY_SIZE = 1<<21;    # 2 megabytes
 my $DEFAULT_AUTODEFER_THRESHHOLD = 3; # 3 records
 my $DEFAULT_AUTODEFER_FILELEN_THRESHHOLD = 65536; # 16 disk blocksful
 
-my %good_opt = map {$_ => 1, "-$_" => 1}
-                 qw(memory dw_size mode recsep discipline 
-                    autodefer autochomp autodefer_threshhold concurrent);
+my %good_opt = map { $_ => 1, "-$_" => 1 }
+  qw(memory dw_size mode recsep discipline
+  autodefer autochomp autodefer_threshhold concurrent binmode);
 
 our $DIAGNOSTIC = 0;
 our @OFF; # used as a temporary alias in some subroutines.
@@ -113,7 +110,11 @@ sub TIEARRAY {
 	$fh = Symbol::gensym();
     }
     sysopen $fh, $file, $opts{mode}, 0666 or return;
-    binmode $fh;
+    if ( $opts{binmode} ) {
+      binmode( $fh, $opts{binmode} );
+    } else {
+      binmode $fh 
+    }
     ++$opts{ourfh};
   }
   { my $ofh = select $fh; $| = 1; select $ofh } # autoflush on write
@@ -2127,6 +2128,16 @@ separator will not be removed.  If the file above was tied with
 then the array C<@gifts> would appear to contain C<("Gold\n",
 "Frankincense\n", "Myrrh\n")>, or (on Win32 systems) C<("Gold\r\n",
 "Frankincense\r\n", "Myrrh\r\n")>.
+
+=head2 C<binmode>
+
+Specify the binmode to set for files opened by Tie::File.
+
+  # make sure Perl is expecting unicode files and strings
+  use utf8;
+  use feature 'unicode_strings';
+  # tie a file with UTF-8 binmode
+  tie my @array, 'Tie::File', 'array.file', 'binmode' => ':encoding(UTF-8)';
 
 =head2 C<mode>
 
